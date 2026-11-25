@@ -1,0 +1,16 @@
+{
+  "name": "SS13 Space Parallax",
+  "version": "0.1.0",
+  "manifest_version": 1,
+  "description": "Локальный многослойный космический параллакс для Owlbear Rodeo.",
+  "icon": "./icon.svg",
+  "author": "Community prototype",
+  "action": {
+    "title": "SS13 Space Parallax",
+    "icon": "./icon.svg",
+    "popover": "./index.html",
+    "width": 360,
+    "height": 560
+  },
+  "background_url": "./background.html"
+}
