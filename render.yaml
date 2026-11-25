@@ -2,9 +2,8 @@ services:
   - type: web
     name: ss13-space-parallax
     runtime: static
-    rootDir: ss13-space-parallax
-    buildCommand: npm install && npm run build
-    staticPublishPath: ./dist
+    buildCommand: cd ss13-space-parallax && npm install && npm run build
+    staticPublishPath: ./ss13-space-parallax/dist
     headers:
       - path: /*
         name: Access-Control-Allow-Origin
