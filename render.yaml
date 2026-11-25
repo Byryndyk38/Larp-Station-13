@@ -2,7 +2,7 @@ services:
   - type: web
     name: ss13-space-parallax
     runtime: static
-    buildCommand: cd ss13-space-parallax && python3 -m pip install numpy pillow && npm install && npm run textures && npm run build
+    buildCommand: cd ss13-space-parallax && npm install && npm run build
     staticPublishPath: ./ss13-space-parallax/dist
     headers:
       - path: /*

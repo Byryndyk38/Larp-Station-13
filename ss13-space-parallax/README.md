@@ -47,4 +47,8 @@ npm run textures   # перегенерировать PNG (нужны python3, n
 
 ## Публикация
 
-GitHub Actions генерирует PNG-текстуры, собирает проект и публикует `dist/` на GitHub Pages (**Settings → Pages → Source: GitHub Actions**).
+GitHub Actions собирает проект и публикует `dist/` на GitHub Pages (**Settings → Pages → Source: GitHub Actions**).
+
+## Если форкаете репозиторий
+
+В `public/manifest.json` пути к `index.html`, `background.html` и иконке — **абсолютные** (`https://<ваш-логин>.github.io/<репозиторий>/...`). Для проектных страниц GitHub Pages (`/<репозиторий>/`) относительные пути Owlbear разворачивает от корня домена и получает 404, поэтому при форке замените логин и имя репозитория.
