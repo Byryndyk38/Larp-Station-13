@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SS13 Space Parallax</title>
+  </head>
+  <body>
+    <main class="panel">
+      <header class="header">
+        <div class="eyebrow">OWLBEAR RODEO EXTENSION</div>
+        <h1>SS13 Space Parallax</h1>
+        <p class="muted">Многослойный космический фон с реакцией на камеру и выбранного персонажа.</p>
+      </header>
+      <section class="status-card">
+        <div class="status-line">
+          <span class="status-dot" id="status-dot"></span>
+          <strong id="status-title">Подключение к Owlbear…</strong>
+        </div>
+        <p id="status-detail" class="muted small">Панель настроек ждёт готовности SDK.</p>
+      </section>
+      <section class="control-card">
+        <label class="toggle-row" for="enabled">
+          <span>
+            <strong>Включить параллакс</strong>
+            <small>Фон создаётся локально только для этого игрока</small>
+          </span>
+          <input id="enabled" type="checkbox" />
+        </label>
+        <div class="field">
+          <div class="range-heading">
+            <label for="camera-gain">Реакция на камеру</label>
+            <output id="camera-value">100%</output>
+          </div>
+          <input id="camera-gain" type="range" min="0" max="200" step="5" value="100" />
+          <small>Панорамирование и перемещение вида.</small>
+        </div>
+        <div class="field">
+          <div class="range-heading">
+            <label for="token-gain">Реакция на персонажа</label>
+            <output id="token-value">100%</output>
+          </div>
+          <input id="token-gain" type="range" min="0" max="200" step="5" value="100" />
+          <small>Движение выбранного токена, когда оно не объясняется движением камеры.</small>
+        </div>
+        <div class="field">
+          <div class="range-heading">
+            <label for="smoothness">Плавность</label>
+            <output id="smoothness-value">70%</output>
+          </div>
+          <input id="smoothness" type="range" min="10" max="95" step="5" value="70" />
+          <small>Больше — плавнее, но с небольшим запаздыванием.</small>
+        </div>
+        <button id="save" class="primary">Сохранить настройки</button>
+      </section>
+      <section class="hint-card">
+        <h2>Как привязать персонажа</h2>
+        <ol>
+          <li>Закрой панель расширения.</li>
+          <li>Выбери один токен персонажа на слое <b>CHARACTER</b>.</li>
+          <li>Снова открой панель и включи параллакс.</li>
+        </ol>
+        <p class="muted small">Расширение отслеживает первый выбранный токен-картинку на слое CHARACTER. Сними выделение, если хочешь остановить отслеживание персонажа.</p>
+      </section>
+      <footer class="footer muted small">
+        Это экспериментальный прототип. Для каждого игрока параллакс запускается отдельно.
+      </footer>
+    </main>
+    <script type="module" src="/src/settings.js"></script>
+  </body>
+</html>
