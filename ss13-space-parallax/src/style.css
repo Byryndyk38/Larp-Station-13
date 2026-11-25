@@ -30,6 +30,8 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: #8b9cff; }
 input[type="range"] { width: 100%; margin: 10px 0 0; accent-color: #9aa9ff; }
 button { border: 0; border-radius: 9px; padding: 11px 14px; font-weight: 750; cursor: pointer; }
 button.primary { background: linear-gradient(135deg, #7187f6, #8d69d9); color: white; }
+button.secondary { background: rgba(141, 162, 214, .14); color: #d9e1f6; border: 1px solid rgba(141, 162, 214, .22); }
+button.secondary:hover { background: rgba(141, 162, 214, .22); }
 button:disabled { opacity: .55; cursor: not-allowed; }
 .hint-card h2 { font-size: 12px; margin: 0 0 8px; }
 .hint-card ol { margin: 0 0 9px; padding-left: 19px; color: #d9e1f6; font-size: 11px; line-height: 1.7; }

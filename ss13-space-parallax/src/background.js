@@ -1,122 +1,126 @@
 import OBR, { buildImage } from "@owlbear-rodeo/sdk";
+import {
+  EXTENSION_ID,
+  DEFAULTS,
+  cleanSettings,
+  clamp,
+  finite,
+  loadSettings,
+  settingsFromPlayer,
+} from "./shared.js";
 
-const EXTENSION_ID = "com.ss13-space-parallax";
-const META_KEY = EXTENSION_ID + ".settings";
-const TILE_SIZE = 1024;
-const TICK_MS = 100;
-const MAX_TILES = 5;
-const DEFAULTS = { enabled: false, cameraGain: 100, tokenGain: 100, smoothness: 70 };
+/*
+ * Как это работает
+ * ----------------
+ * Owlbear не умеет рисовать «фон, прибитый к экрану», поэтому мы имитируем его
+ * локальными (видимыми только этому игроку) картинками в слое MAP под картой.
+ * Каждый тик мы:
+ *   1. читаем положение/масштаб камеры;
+ *   2. считаем, на сколько пикселей ЭКРАНА должен сдвинуться каждый слой
+ *      (камера и выбранный токен двигают слои с разной «глубиной»);
+ *   3. переводим экранные координаты тайлов в мировые и обновляем их.
+ *
+ * Тайлы имеют постоянный размер на экране (не зависят от зума), поэтому
+ * достаточно 2×2…7×5 картинок на слой — даже при сильном отдалении карты.
+ *
+ * ВАЖНО: OBR.viewport.getPosition() — это НЕ центр камеры в мире, а сдвиг
+ * мира на экране: экран = мир × scale + position. Центр камеры в мире:
+ *   ((width/2 − position.x) / scale, (height/2 − position.y) / scale).
+ */
+
+const MAX_COLS = 7;
+const MAX_ROWS = 5;
+const ACTIVE_TICK_MS = 16;
+const IDLE_TICK_MS = 90;
+const IDLE_AFTER_TICKS = 45;
+const SIZE_REFRESH_MS = 1000;
+const EPSILON = 0.02; // не шлём обновление, если тайл сдвинулся меньше, чем на это
+
+// camera/token — доля движения, которую повторяет слой (0 = прибит к экрану, 1 = как карта).
+// size — размер тайла на экране в px; px — размер исходной картинки.
 const LAYERS = [
-  { key: "far", file: "deep-space.svg", camera: 0.035, token: 0.010, z: -100000 },
-  { key: "nebula", file: "nebula.svg", camera: 0.105, token: 0.035, z: -99999 },
-  { key: "near", file: "near-stars.svg", camera: 0.235, token: 0.080, z: -99998 },
+  { key: "far", file: "deep-space.png", px: 1024, size: 1024, camera: 0.035, token: 0.01, z: -100000, overlap: 1 },
+  { key: "nebula", file: "nebula.png", px: 512, size: 2048, camera: 0.105, token: 0.035, z: -99999, overlap: 0 },
+  { key: "near", file: "near-stars.png", px: 1024, size: 1024, camera: 0.235, token: 0.08, z: -99998, overlap: 0 },
 ];
 
 let settings = { ...DEFAULTS };
+let sceneReady = false;
 let running = false;
-let timer = null;
-let busy = false;
-let itemCache = [];
-let tileRecords = [];
-let columns = 3;
-let rows = 3;
-let dpi = 100;
-let lastCamera = null;
+let runId = 0;
+let rebuilding = false;
+
+let sceneItems = [];
+let selection = [];
+let trackedId = null;
+
+let view = { w: 1280, h: 720, x: 0, y: 0, scale: 1 };
+let sceneDpi = 150;
+let lastSizeCheck = 0;
+
+let tileSets = []; // [{ layer, cols, rows, tiles: [{ item, col, row, wx, wy, ws }] }]
+let motion = {};
+let lastCenter = null;
 let lastToken = null;
-let selectedTokenId = null;
-let targetOffsets = Object.fromEntries(LAYERS.map((layer) => [layer.key, { x: 0, y: 0 }]));
-let renderedOffsets = Object.fromEntries(LAYERS.map((layer) => [layer.key, { x: 0, y: 0 }]));
-let lastFrame = performance.now();
+let lastFrame = 0;
+let idleTicks = 0;
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
+const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+const mod = (value, size) => ((value % size) + size) % size;
 
-function finite(value, fallback) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
-}
-
-function cleanSettings(value) {
-  return {
-    enabled: Boolean(value && value.enabled !== undefined ? value.enabled : DEFAULTS.enabled),
-    cameraGain: clamp(finite(value && value.cameraGain, DEFAULTS.cameraGain), 0, 200),
-    tokenGain: clamp(finite(value && value.tokenGain, DEFAULTS.tokenGain), 0, 200),
-    smoothness: clamp(finite(value && value.smoothness, DEFAULTS.smoothness), 10, 95),
-  };
-}
-
-async function readSettings() {
-  try {
-    const metadata = await OBR.player.getMetadata();
-    return cleanSettings(metadata && metadata[META_KEY]);
-  } catch (error) {
-    console.warn("[SS13 Space Parallax] Could not read settings", error);
-    return { ...DEFAULTS };
-  }
-}
-
-function resetMotion(camera, token) {
-  lastCamera = camera ? { x: camera.x, y: camera.y } : null;
-  lastToken = token ? { x: token.x, y: token.y } : null;
+function resetMotion() {
+  motion = Object.fromEntries(LAYERS.map((layer) => [layer.key, { tx: 0, ty: 0, rx: 0, ry: 0 }]));
+  lastCenter = null;
+  lastToken = null;
   lastFrame = performance.now();
-  for (const layer of LAYERS) {
-    targetOffsets[layer.key] = { x: 0, y: 0 };
-    renderedOffsets[layer.key] = { x: 0, y: 0 };
-  }
+  idleTicks = 0;
 }
+
+/* ---------- выбранный токен ---------- */
 
 function isCharacterImage(item) {
   return Boolean(item && item.type === "IMAGE" && item.layer === "CHARACTER");
 }
 
-async function getTrackedToken() {
-  try {
-    const selectedIds = (await OBR.player.getSelection()) || [];
-    const token = selectedIds
-      .map((id) => itemCache.find((item) => item.id === id))
-      .find(isCharacterImage);
-    if (!token) return null;
-    return {
-      id: token.id,
-      x: finite(token.position && token.position.x, 0),
-      y: finite(token.position && token.position.y, 0),
-    };
-  } catch (error) {
-    console.debug("[SS13 Space Parallax] Selection unavailable", error);
-    return null;
+function refreshTrackedToken() {
+  // «Липкий» режим: помним последний выбранный токен CHARACTER, пока не выберут другой.
+  for (const id of selection) {
+    const item = sceneItems.find((candidate) => candidate.id === id);
+    if (isCharacterImage(item)) {
+      trackedId = item.id;
+      return;
+    }
   }
+  if (trackedId && !sceneItems.some((item) => item.id === trackedId)) trackedId = null;
 }
+
+function trackedTokenPosition() {
+  if (!trackedId) return null;
+  const item = sceneItems.find((candidate) => candidate.id === trackedId);
+  if (!item || !item.position) return null;
+  return { id: item.id, x: finite(item.position.x, 0), y: finite(item.position.y, 0) };
+}
+
+/* ---------- тайлы ---------- */
 
 function tileUrl(file) {
-  return new URL("./assets/" + file, window.location.href).href;
+  return new URL("./tiles/" + file, window.location.href).href;
 }
 
-function tileCounts(width, height, scale) {
-  const safeScale = Math.max(0.05, finite(scale, 1));
-  const worldWidth = Math.max(TILE_SIZE, finite(width, TILE_SIZE) / safeScale);
-  const worldHeight = Math.max(TILE_SIZE, finite(height, TILE_SIZE) / safeScale);
+function gridFor(layer) {
   return {
-    columns: clamp(Math.ceil(worldWidth / TILE_SIZE) + 2, 3, MAX_TILES),
-    rows: clamp(Math.ceil(worldHeight / TILE_SIZE) + 2, 3, MAX_TILES),
+    cols: clamp(Math.ceil(view.w / layer.size) + 1, 2, MAX_COLS),
+    rows: clamp(Math.ceil(view.h / layer.size) + 1, 2, MAX_ROWS),
   };
 }
 
-function makeTile(layer, column, row) {
+function makeTile(layer, col, row) {
   return buildImage(
-    {
-      width: TILE_SIZE,
-      height: TILE_SIZE,
-      url: tileUrl(layer.file),
-      mime: "image/svg+xml",
-    },
-    {
-      dpi,
-      offset: { x: TILE_SIZE / 2, y: TILE_SIZE / 2 },
-    },
+    { width: layer.px, height: layer.px, url: tileUrl(layer.file), mime: "image/png" },
+    { dpi: sceneDpi, offset: { x: layer.px / 2, y: layer.px / 2 } },
   )
     .name("SS13 Space Parallax — " + layer.key)
-    .description("Local parallax background tile")
+    .description("Локальный тайл параллакс-фона")
     .position({ x: 0, y: 0 })
     .layer("MAP")
     .zIndex(layer.z)
@@ -124,204 +128,326 @@ function makeTile(layer, column, row) {
     .visible(true)
     .disableHit(true)
     .disableAutoZIndex(true)
-    .metadata({
-      [EXTENSION_ID]: { role: "tile", layer: layer.key, column, row },
-    })
+    .metadata({ [EXTENSION_ID]: { role: "tile", layer: layer.key, col, row } })
     .build();
 }
 
-async function removeTiles() {
-  if (!tileRecords.length) return;
-  const ids = tileRecords.map((record) => record.id);
-  tileRecords = [];
+async function deleteTiles() {
+  const ids = tileSets.flatMap((set) => set.tiles.map((tile) => tile.item.id));
+  tileSets = [];
   try {
-    await OBR.scene.local.deleteItems(ids);
+    // Заодно чистим «осиротевшие» тайлы от прошлого запуска расширения.
+    const stale = await OBR.scene.local.getItems(
+      (item) => Boolean(item.metadata && item.metadata[EXTENSION_ID] && item.metadata[EXTENSION_ID].role === "tile"),
+    );
+    for (const item of stale) if (!ids.includes(item.id)) ids.push(item.id);
+    if (ids.length) await OBR.scene.local.deleteItems(ids);
   } catch (error) {
-    console.warn("[SS13 Space Parallax] Could not remove local tiles", error);
+    console.warn("[SS13 Space Parallax] Не удалось удалить тайлы", error);
   }
 }
 
-async function placeTiles(camera) {
-  if (!tileRecords.length) return;
-  const positions = new Map();
+async function buildTiles() {
+  await deleteTiles();
+  sceneDpi = finite(await OBR.scene.grid.getDpi(), 150);
 
+  const sets = [];
+  const toAdd = [];
   for (const layer of LAYERS) {
-    const offset = renderedOffsets[layer.key];
-    const anchorX = camera.x + offset.x;
-    const anchorY = camera.y + offset.y;
-    const firstColumn = Math.floor(anchorX / TILE_SIZE) - Math.floor(columns / 2);
-    const firstRow = Math.floor(anchorY / TILE_SIZE) - Math.floor(rows / 2);
+    const { cols, rows } = gridFor(layer);
+    const tiles = [];
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < cols; col += 1) {
+        const item = makeTile(layer, col, row);
+        toAdd.push(item);
+        // Infinity гарантирует, что первое сравнение «значение изменилось» сработает (с NaN оно всегда ложно).
+        tiles.push({ item, col, row, wx: Infinity, wy: Infinity, ws: Infinity });
+      }
+    }
+    sets.push({ layer, cols, rows, tiles });
+  }
+  await OBR.scene.local.addItems(toAdd);
+  tileSets = sets;
+}
 
-    for (const record of tileRecords) {
-      if (record.layer !== layer.key) continue;
-      const col = record.slot % columns;
-      const row = Math.floor(record.slot / columns);
-      positions.set(record.id, {
-        x: (firstColumn + col + 0.5) * TILE_SIZE + offset.x,
-        y: (firstRow + row + 0.5) * TILE_SIZE + offset.y,
-      });
+async function rebuildTiles() {
+  if (rebuilding || !running) return;
+  rebuilding = true;
+  try {
+    await buildTiles();
+    idleTicks = 0;
+  } catch (error) {
+    console.warn("[SS13 Space Parallax] Не удалось пересоздать тайлы", error);
+  } finally {
+    rebuilding = false;
+  }
+}
+
+async function renderTiles() {
+  const changed = [];
+  const values = [];
+  const { x: vx, y: vy, scale } = view;
+
+  for (const set of tileSets) {
+    const { layer } = set;
+    const m = motion[layer.key];
+    const ox = mod(m.rx, layer.size);
+    const oy = mod(m.ry, layer.size);
+    const side = layer.size + layer.overlap; // небольшой нахлёст у непрозрачного слоя убирает швы
+    const worldScale = side / scale / layer.px;
+
+    for (const tile of set.tiles) {
+      const screenX = ox + (tile.col - 1) * layer.size + side / 2;
+      const screenY = oy + (tile.row - 1) * layer.size + side / 2;
+      const wx = (screenX - vx) / scale;
+      const wy = (screenY - vy) / scale;
+
+      if (
+        Math.abs(wx - tile.wx) > EPSILON ||
+        Math.abs(wy - tile.wy) > EPSILON ||
+        Math.abs(worldScale - tile.ws) > 1e-6
+      ) {
+        changed.push(tile);
+        values.push({ wx, wy, ws: worldScale });
+      }
     }
   }
+  if (!changed.length) return false;
 
   await OBR.scene.local.updateItems(
-    tileRecords.map((record) => record.id),
-    (items) => {
-      for (const item of items) {
-        const position = positions.get(item.id);
-        if (position) {
-          item.position.x = position.x;
-          item.position.y = position.y;
-        }
+    changed.map((tile) => tile.item), // передаём объекты, чтобы SDK не делал лишний запрос за ними
+    (drafts) => {
+      for (let i = 0; i < drafts.length; i += 1) {
+        drafts[i].position.x = values[i].wx;
+        drafts[i].position.y = values[i].wy;
+        drafts[i].scale.x = values[i].ws;
+        drafts[i].scale.y = values[i].ws;
       }
     },
     true,
   );
+
+  // База для следующего сравнения (immer не мутирует исходные объекты).
+  changed.forEach((tile, i) => {
+    const v = values[i];
+    tile.wx = v.wx;
+    tile.wy = v.wy;
+    tile.ws = v.ws;
+    tile.item = {
+      ...tile.item,
+      position: { x: v.wx, y: v.wy },
+      scale: { x: v.ws, y: v.ws },
+    };
+  });
+  return true;
 }
 
-async function createTiles(camera) {
-  await removeTiles();
-  const values = await Promise.all([
-    OBR.viewport.getWidth(),
-    OBR.viewport.getHeight(),
-    OBR.viewport.getScale(),
-    OBR.scene.grid.getDpi(),
-  ]);
-  dpi = finite(values[3], 100);
-  const counts = tileCounts(values[0], values[1], values[2]);
-  columns = counts.columns;
-  rows = counts.rows;
+/* ---------- движение ---------- */
 
-  const items = [];
-  const records = [];
+function accumulateMovement(center, token) {
+  if (!lastCenter) {
+    lastCenter = center;
+    lastToken = token;
+    return false;
+  }
+
+  const dcx = center.x - lastCenter.x;
+  const dcy = center.y - lastCenter.y;
+  let dtx = 0;
+  let dty = 0;
+  if (token && lastToken && token.id === lastToken.id) {
+    dtx = token.x - lastToken.x;
+    dty = token.y - lastToken.y;
+  }
+  lastCenter = center;
+  lastToken = token;
+
+  if (dcx === 0 && dcy === 0 && dtx === 0 && dty === 0) return false;
+
+  const cameraGain = settings.cameraGain / 100;
+  const tokenGain = settings.tokenGain / 100;
+  const scale = view.scale;
   for (const layer of LAYERS) {
-    for (let row = 0; row < rows; row += 1) {
-      for (let col = 0; col < columns; col += 1) {
-        const item = makeTile(layer, col, row);
-        items.push(item);
-        records.push({ id: item.id, layer: layer.key, slot: row * columns + col });
-      }
+    const m = motion[layer.key];
+    // Слой смещается на экране в ту же сторону, что и карта, но медленнее (камера),
+    // и в сторону, противоположную движению токена (как в SS13).
+    m.tx += -(dcx * layer.camera * cameraGain + dtx * layer.token * tokenGain) * scale;
+    m.ty += -(dcy * layer.camera * cameraGain + dty * layer.token * tokenGain) * scale;
+  }
+  return true;
+}
+
+function smoothMotion() {
+  const now = performance.now();
+  const elapsed = clamp(now - lastFrame, 1, 250);
+  lastFrame = now;
+  const tau = 30 + settings.smoothness * 1.7;
+  const alpha = 1 - Math.exp(-elapsed / tau);
+  let moving = false;
+
+  for (const layer of LAYERS) {
+    const m = motion[layer.key];
+    const dx = m.tx - m.rx;
+    const dy = m.ty - m.ry;
+    m.rx += dx * alpha;
+    m.ry += dy * alpha;
+    if (Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05) moving = true;
+
+    // Держим числа маленькими: сдвиг на целое число тайлов ничего не меняет визуально.
+    const kx = Math.floor(m.rx / layer.size);
+    const ky = Math.floor(m.ry / layer.size);
+    if (kx || ky) {
+      m.rx -= kx * layer.size;
+      m.tx -= kx * layer.size;
+      m.ry -= ky * layer.size;
+      m.ty -= ky * layer.size;
     }
   }
-  await OBR.scene.local.addItems(items);
-  tileRecords = records;
-  await placeTiles(camera);
+  return moving;
 }
 
-function addMovement(camera, token) {
-  if (!lastCamera) {
-    resetMotion(camera, token);
-    return;
+async function refreshViewportSize() {
+  const now = performance.now();
+  if (now - lastSizeCheck < SIZE_REFRESH_MS) return;
+  lastSizeCheck = now;
+  const [w, h] = await Promise.all([OBR.viewport.getWidth(), OBR.viewport.getHeight()]);
+  const nextW = finite(w, view.w);
+  const nextH = finite(h, view.h);
+  const sizeChanged = nextW !== view.w || nextH !== view.h;
+  view.w = nextW;
+  view.h = nextH;
+
+  if (
+    sizeChanged &&
+    tileSets.some((set) => {
+      const { cols, rows } = gridFor(set.layer);
+      return cols !== set.cols || rows !== set.rows;
+    })
+  ) {
+    await rebuildTiles();
   }
+}
 
-  const cameraDelta = { x: camera.x - lastCamera.x, y: camera.y - lastCamera.y };
-  let tokenRelative = { x: 0, y: 0 };
+async function tick() {
+  if (rebuilding) return;
+  await refreshViewportSize();
+  if (!tileSets.length) return;
 
-  if (token && token.id === selectedTokenId && lastToken) {
-    const tokenDelta = { x: token.x - lastToken.x, y: token.y - lastToken.y };
-    const moved = Math.abs(tokenDelta.x) + Math.abs(tokenDelta.y) > 0.25;
-    if (moved) {
-      tokenRelative = {
-        x: tokenDelta.x - cameraDelta.x,
-        y: tokenDelta.y - cameraDelta.y,
-      };
+  const [position, scale] = await Promise.all([OBR.viewport.getPosition(), OBR.viewport.getScale()]);
+  view.x = finite(position.x, 0);
+  view.y = finite(position.y, 0);
+  view.scale = Math.max(1e-4, finite(scale, 1));
+
+  const center = {
+    x: (view.w / 2 - view.x) / view.scale,
+    y: (view.h / 2 - view.y) / view.scale,
+  };
+
+  const movedNow = accumulateMovement(center, trackedTokenPosition());
+  const stillSliding = smoothMotion();
+  const rendered = await renderTiles();
+
+  idleTicks = movedNow || stillSliding || rendered ? 0 : idleTicks + 1;
+}
+
+async function loop(myRunId) {
+  while (running && runId === myRunId) {
+    const started = performance.now();
+    try {
+      await tick();
+    } catch (error) {
+      console.debug("[SS13 Space Parallax] tick failed", error);
     }
+    const delay = idleTicks > IDLE_AFTER_TICKS ? IDLE_TICK_MS : ACTIVE_TICK_MS;
+    await sleep(Math.max(0, delay - (performance.now() - started)));
   }
-
-  for (const layer of LAYERS) {
-    const target = targetOffsets[layer.key];
-    target.x += -cameraDelta.x * layer.camera * settings.cameraGain / 100
-      - tokenRelative.x * layer.token * settings.tokenGain / 100;
-    target.y += -cameraDelta.y * layer.camera * settings.cameraGain / 100
-      - tokenRelative.y * layer.token * settings.tokenGain / 100;
-  }
-
-  lastCamera = { x: camera.x, y: camera.y };
-  lastToken = token ? { x: token.x, y: token.y } : null;
 }
 
-async function frame() {
-  if (!running || busy) return;
-  busy = true;
+/* ---------- запуск / остановка ---------- */
+
+async function startEngine() {
+  if (running) return;
+  running = true;
+  const myRunId = (runId += 1);
   try {
-    const camera = await OBR.viewport.getPosition();
-    const token = await getTrackedToken();
-
-    if ((token && token.id) !== selectedTokenId) {
-      selectedTokenId = token ? token.id : null;
-      lastToken = token ? { x: token.x, y: token.y } : null;
-    }
-
-    addMovement(camera, token);
-
-    const now = performance.now();
-    const elapsed = Math.max(1, now - lastFrame);
-    lastFrame = now;
-    const tau = 30 + settings.smoothness * 1.7;
-    const alpha = 1 - Math.exp(-elapsed / tau);
-    let changed = false;
-
-    for (const layer of LAYERS) {
-      const target = targetOffsets[layer.key];
-      const current = renderedOffsets[layer.key];
-      const oldX = current.x;
-      const oldY = current.y;
-      current.x += (target.x - current.x) * alpha;
-      current.y += (target.y - current.y) * alpha;
-      if (Math.abs(current.x - oldX) > 0.01 || Math.abs(current.y - oldY) > 0.01) changed = true;
-    }
-
-    if (changed) await placeTiles(camera);
+    sceneItems = await OBR.scene.items.getItems();
+    refreshTrackedToken();
+    resetMotion();
+    view.w = finite(await OBR.viewport.getWidth(), view.w);
+    view.h = finite(await OBR.viewport.getHeight(), view.h);
+    lastSizeCheck = performance.now();
+    await buildTiles();
+    void loop(myRunId);
   } catch (error) {
-    console.warn("[SS13 Space Parallax] Frame failed", error);
-  } finally {
-    busy = false;
+    running = false;
+    console.error("[SS13 Space Parallax] Не удалось запустить", error);
+    await deleteTiles();
   }
 }
 
 async function stopEngine() {
+  if (!running) return;
   running = false;
-  if (timer) window.clearInterval(timer);
-  timer = null;
-  await removeTiles();
-  resetMotion(null, null);
-  selectedTokenId = null;
+  runId += 1;
+  await deleteTiles();
+  resetMotion();
 }
 
-async function startEngine() {
-  if (running || !(await OBR.scene.isReady())) return;
-  running = true;
-  try {
-    itemCache = await OBR.scene.items.getItems();
-    const camera = await OBR.viewport.getPosition();
-    const token = await getTrackedToken();
-    selectedTokenId = token ? token.id : null;
-    resetMotion(camera, token);
-    await createTiles(camera);
-    timer = window.setInterval(frame, TICK_MS);
-  } catch (error) {
-    running = false;
-    console.error("[SS13 Space Parallax] Could not start", error);
-    await removeTiles();
-  }
+async function syncEngine() {
+  const shouldRun = settings.enabled && sceneReady;
+  if (shouldRun && !running) await startEngine();
+  else if (!shouldRun && running) await stopEngine();
 }
 
-async function reconcileSettings() {
-  const next = await readSettings();
-  const previousEnabled = settings.enabled;
-  settings = next;
-  if (settings.enabled && !previousEnabled) await startEngine();
-  else if (!settings.enabled && previousEnabled) await stopEngine();
+function applySettings(next) {
+  if (!next) return;
+  const before = JSON.stringify(settings);
+  settings = cleanSettings(next);
+  if (JSON.stringify(settings) !== before) void syncEngine();
 }
 
 async function boot() {
-  settings = await readSettings();
-  OBR.scene.items.onChange((items) => { itemCache = items; });
-  OBR.player.onChange(() => { void reconcileSettings(); });
-  OBR.scene.onReadyChange((ready) => {
-    if (ready && settings.enabled) void startEngine();
-    else if (!ready) void stopEngine();
+  settings = await loadSettings();
+  sceneReady = await OBR.scene.isReady();
+  if (sceneReady) {
+    sceneItems = await OBR.scene.items.getItems();
+    selection = (await OBR.player.getSelection()) || [];
+    refreshTrackedToken();
+  }
+
+  OBR.scene.items.onChange((items) => {
+    sceneItems = items;
+    refreshTrackedToken();
   });
-  if (settings.enabled && await OBR.scene.isReady()) await startEngine();
+
+  OBR.player.onChange((player) => {
+    selection = player.selection || [];
+    refreshTrackedToken();
+    applySettings(settingsFromPlayer(player));
+  });
+
+  OBR.scene.onReadyChange(async (ready) => {
+    sceneReady = ready;
+    if (ready) {
+      sceneItems = await OBR.scene.items.getItems();
+      refreshTrackedToken();
+    } else {
+      trackedId = null;
+      sceneItems = [];
+    }
+    // Новая сцена — локальные предметы пропали сами, поэтому перезапускаем движок целиком.
+    if (running) await stopEngine();
+    await syncEngine();
+  });
+
+  // Если в сцене поменяли DPI сетки, размер тайлов нужно пересчитать.
+  OBR.scene.grid.onChange((grid) => {
+    if (running && finite(grid && grid.dpi, sceneDpi) !== sceneDpi) void rebuildTiles();
+  });
+
+  await syncEngine();
 }
 
-OBR.onReady(() => { void boot(); });
+OBR.onReady(() => {
+  void boot();
+});

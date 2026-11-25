@@ -29,9 +29,21 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install dependencies
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install texture dependencies
+        run: python -m pip install --upgrade pip numpy pillow
+
+      - name: Install Node dependencies
         working-directory: ss13-space-parallax
         run: npm install
+
+      - name: Generate seamless textures
+        working-directory: ss13-space-parallax
+        run: npm run textures
 
       - name: Build extension
         working-directory: ss13-space-parallax

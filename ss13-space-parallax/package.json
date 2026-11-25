@@ -1,12 +1,13 @@
 {
   "name": "ss13-space-parallax",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "textures": "python3 scripts/generate_textures.py"
   },
   "dependencies": {
     "@owlbear-rodeo/sdk": "^3.0.0"

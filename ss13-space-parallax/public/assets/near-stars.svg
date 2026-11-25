@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-<defs><pattern id="near" width="257" height="229" patternUnits="userSpaceOnUse">
- <circle cx="22" cy="35" r="1.6" fill="#e6f0ff" opacity=".8"/><circle cx="131" cy="83" r="2.1" fill="#e6f0ff" opacity=".68"/><circle cx="222" cy="174" r="1.2" fill="#c7d9ff" opacity=".9"/><circle cx="75" cy="193" r=".9" fill="#fff" opacity=".7"/><path d="M177 20v12m-6-6h12" stroke="#dbeafe" stroke-width=".8" opacity=".5"/>
-</pattern></defs>
-<rect width="1024" height="1024" fill="url(#near)"/>
-</svg>

@@ -1,24 +1,50 @@
-# SS13 Space Parallax for Owlbear Rodeo
+# SS13 Space Parallax для Owlbear Rodeo
 
-A multi-layer space background extension for Owlbear Rodeo. The visual layers respond to camera panning and a selected character token.
+Расширение добавляет многослойный космический фон с параллаксом, как в Space Station 13. Фон строится из **локальных** предметов, поэтому виден только тому игроку, который включил расширение, и не меняет общую карту.
 
-## Free hosting with GitHub Pages
+## Установка
 
-This repository publishes the extension with GitHub Actions. The workflow builds the Vite project from this directory and deploys only `dist/`.
+В Owlbear Rodeo: профиль → **Extensions** → **Add Extension** → вставить ссылку:
 
-Once GitHub Pages has been enabled with **Settings → Pages → Build and deployment → Source: GitHub Actions**, the Owlbear install URL is:
+```
+https://byryndyk38.github.io/Larp-Station-13/manifest.json
+```
 
-`https://byryndyk38.github.io/Larp-Station-13/manifest.json`
+Затем откройте комнату, включите расширение и нажмите на его иконку, чтобы включить параллакс.
 
-## Local development
+## Как это выглядит
+
+- Фон рисуется **под картой** (слой MAP): он виден там, где карта прозрачна — окна, пробоины, космос вокруг станции. Используйте карты в PNG с прозрачностью.
+- Три слоя двигаются с разной скоростью: далёкий тёмный космос, туманность, ближние звёзды.
+- Слои реагируют на **движение камеры** и на **движение выбранного токена** (фон уходит в сторону, противоположную движению персонажа). Расширение запоминает последний выбранный токен на слое CHARACTER.
+- Размер звёзд не зависит от зума: при отдалении карты фон остаётся «бесконечно далёким».
+- Настройки применяются сразу и сохраняются в браузере.
+
+## Что исправлено в 0.2.0
+
+- **Камера.** `OBR.viewport.getPosition()` возвращает сдвиг мира на экране, а не центр камеры в мире. Старый код использовал его как мировую координату, из-за чего слои уезжали не туда. Теперь центр считается как `((w/2 − x)/scale, (h/2 − y)/scale)`.
+- **Бесшовные текстуры.** SVG с градиентами и блюром обрезались по краю тайла и давали швы. Теперь PNG, сгенерированные бесшовным шумом (`scripts/generate_textures.py`).
+- **Зум.** Тайлы имеют постоянный экранный размер, так что покрытия хватает при любом зуме (раньше при отдалении появлялись пустые края).
+- **Токен.** Убрана ошибка с вычитанием движения камеры из движения токена; токен «липкий» — снятие выделения не ломает эффект.
+- **Скорость.** Цикл ~60 Гц вместо 10 Гц, обновляются только изменившиеся тайлы, в покое опрос замедляется и обновления не отправляются. Выделение и предметы приходят по событиям, а не опросом.
+- **Настройки.** Вкл/выкл и ползунки переживают перезагрузку (`localStorage` + metadata игрока), применяются сразу.
+- **Надёжность.** Тайлы пересоздаются при смене размера окна и DPI сетки, при смене сцены; «осиротевшие» тайлы удаляются при старте.
+
+## Известное ограничение
+
+В Owlbear SDK нет события «камера сдвинулась», поэтому положение камеры опрашивается. При очень быстром перетаскивании карты дальние слои могут слегка «дрожать» на величину движения за один тик. Если это заметно, увеличьте ползунок **Плавность**.
+
+## Разработка
 
 ```bash
 npm install
-npm run dev
+npm run dev        # локальный сервер
+npm run build      # сборка в dist/
+npm run textures   # перегенерировать PNG (нужны python3, numpy, pillow)
 ```
 
-## Notes
+Для проверки локально добавьте в Owlbear ссылку `http://localhost:5173/manifest.json`.
 
-- Each player enables the extension locally and selects a token on the CHARACTER layer.
-- The background is rendered with local Owlbear scene items and does not modify the shared map.
-- Test on a duplicate scene first: layer ordering depends on the stacking order of the map artwork in the room.
+## Публикация
+
+GitHub Actions генерирует PNG-текстуры, собирает проект и публикует `dist/` на GitHub Pages (**Settings → Pages → Source: GitHub Actions**).
